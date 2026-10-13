@@ -1,0 +1,20 @@
+# Nothing from the game or the Unity project belongs here (see README).
+# These patterns catch it if a lab folder ever ends up inside the repo.
+/lab/
+/export/
+/project/
+ExportedProject/
+Library/
+Temp/
+Logs/
+Builds/
+*.assets
+*.resS
+*.resource
+*.unity
+*.dll
+*.exe
+__pycache__/
+
+# Your own paths (tools/portpaths.py); see overcooked-port.example.json.
+overcooked-port.json

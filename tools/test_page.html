@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<!--
+  Test page for the WebGL build, served by tools/serve.py at /__test.html.
+  It loads the same build as index.html, sends every console line to the
+  server (saved as browser.log) and can run a timed script of key presses and
+  canvas screenshots, so a headless Chrome (tools/headless_test.py) can play
+  the first minutes without anyone at the PC.
+
+  Query: ?run=<name>&script=<steps>[&sound=1]  (silent unless sound=1)
+    steps: comma-separated "<seconds>@<action>", actions:
+      shot             save a PNG of the canvas
+      tap:<Code>[:ms]  press and release a key (KeyboardEvent.code, e.g. Enter, KeyW, Space),
+                       held for ms (default 60; the menus repeat a held key quickly, and
+                       a 150 ms hold moved two entries where a real press moves one)
+      down:<Code> / up:<Code>
+      end              tell the server the run is over
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Overcooked test</title>
+  <style>html, body { margin: 0; background: #000; } canvas { display: block; }</style>
+</head>
+<body>
+  <canvas id="unity-canvas" tabindex="-1"></canvas>
+  <!-- Simulated DS4; does nothing without ?pad= -->
+  <script src="__fake-gamepad.js"></script>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const run = params.get("run") || "run";
+    const t0 = performance.now();
+    const stamp = () => ((performance.now() - t0) / 1000).toFixed(1).padStart(6);
+
+    // Send log lines in small batches so a flood of errors doesn't stall the page.
+    let pending = [];
+    let lastLine = "", repeats = 0;
+    function post(path, body) {
+      return fetch(path + "?run=" + encodeURIComponent(run), { method: "POST", body }).catch(() => {});
+    }
+    function flush() {
+      if (repeats) { pending.push(`${stamp()} (last line repeated ${repeats} more times)`); repeats = 0; }
+      if (pending.length) { post("/__log", pending.join("\n") + "\n"); pending = []; }
+    }
+    setInterval(flush, 1000);
+    function record(level, args) {
+      const text = Array.from(args).map((a) => (a instanceof Error ? a.stack || String(a) : typeof a === "object" ? safeJson(a) : String(a))).join(" ");
+      const line = `${level} ${text}`;
+      if (line === lastLine) { repeats++; return; }
+      if (repeats) { pending.push(`${stamp()} (last line repeated ${repeats} more times)`); repeats = 0; }
+      lastLine = line;
+      pending.push(`${stamp()} ${line}`);
+    }
+    function safeJson(o) { try { return JSON.stringify(o); } catch (e) { return String(o); } }
+    for (const level of ["log", "info", "warn", "error", "debug"]) {
+      const original = console[level].bind(console);
+      console[level] = (...args) => { record(level.toUpperCase(), args); original(...args); };
+    }
+    window.addEventListener("error", (e) => record("UNCAUGHT", [e.message, e.filename + ":" + e.lineno]));
+    window.addEventListener("unhandledrejection", (e) => record("REJECTED", [e.reason]));
+
+    // Note which elements the game registers key listeners on, so a doubled
+    // key press can be traced (logged once the game is ready).
+    const keyListeners = [];
+    const addListener = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function (type, fn, opts) {
+      if (type === "keydown" || type === "keyup") {
+        keyListeners.push(type + " on " + (this === window ? "window" : this === document ? "document" : (this.id || this.nodeName)));
+      }
+      return addListener.call(this, type, fn, opts);
+    };
+
+    // Test runs are silent: every sound the game makes goes through a gain of 0
+    // (?sound=1 turns it back on). The normal page, index.html, is unaffected.
+    if (params.get("sound") !== "1" && window.AudioContext) {
+      const realDestination = Object.getOwnPropertyDescriptor(AudioContext.prototype, "destination")
+        || Object.getOwnPropertyDescriptor(BaseAudioContext.prototype, "destination");
+      Object.defineProperty(AudioContext.prototype, "destination", {
+        configurable: true,
+        get() {
+          if (!this.__muted) {
+            this.__muted = this.createGain();
+            this.__muted.gain.value = 0;
+            this.__muted.connect(realDestination.get.call(this));
+          }
+          return this.__muted;
+        },
+      });
+    }
+
+    const canvas = document.getElementById("unity-canvas");
+    // Canvas size in CSS pixels (?w=&h=, default 1920x1080); the window is opened at the same size.
+    canvas.width = parseInt(params.get("w"), 10) || 1920;
+    canvas.height = parseInt(params.get("h"), 10) || 1080;
+    canvas.style.width = canvas.width + "px";
+    canvas.style.height = canvas.height + "px";
+
+    function shot(label) {
+      canvas.toBlob((blob) => { if (blob) post("/__shot", blob).then(() => record("TEST", ["screenshot " + label])); }, "image/png");
+    }
+
+    // Unity reads keyCode as well as code, and synthetic events leave keyCode at 0.
+    const keyCodes = { Enter: 13, Space: 32, Escape: 27, Tab: 9, ShiftLeft: 16, ControlLeft: 17, AltLeft: 18,
+      ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40 };
+    function keyEvent(type, code) {
+      let keyCode = keyCodes[code];
+      let key = code;
+      if (!keyCode && code.startsWith("Key")) { key = code.slice(3).toLowerCase(); keyCode = key.toUpperCase().charCodeAt(0); }
+      if (!keyCode && code.startsWith("Digit")) { key = code.slice(5); keyCode = key.charCodeAt(0); }
+      if (code === "Space") key = " ";
+      const ev = new KeyboardEvent(type, { code, key, bubbles: true, cancelable: true });
+      Object.defineProperty(ev, "keyCode", { get: () => keyCode || 0 });
+      Object.defineProperty(ev, "which", { get: () => keyCode || 0 });
+      canvas.dispatchEvent(ev);
+    }
+
+    function runScript() {
+      const steps = (params.get("script") || "").split(",").filter(Boolean);
+      for (const step of steps) {
+        const [at, action] = step.split("@");
+        setTimeout(() => {
+          record("TEST", [action]);
+          const [verb, arg, holdMs] = action.split(":");
+          if (verb === "shot") shot(`at ${at}s`);
+          else if (verb === "tap") { keyEvent("keydown", arg); setTimeout(() => keyEvent("keyup", arg), parseInt(holdMs, 10) || 60); }
+          else if (verb === "down") keyEvent("keydown", arg);
+          else if (verb === "up") keyEvent("keyup", arg);
+          else if (verb === "end") { flush(); post("/__end", ""); }
+        }, parseFloat(at) * 1000);
+      }
+    }
+
+    record("TEST", ["page loaded", navigator.userAgent]);
+    const gl = document.createElement("canvas").getContext("webgl2");
+    if (gl) {
+      const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+      record("TEST", ["WebGL2 renderer", dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)]);
+    } else {
+      record("TEST", ["no WebGL2"]);
+    }
+
+    const config = {
+      dataUrl: "Build/WebGL.data.br",
+      frameworkUrl: "Build/WebGL.framework.js.br",
+      codeUrl: "Build/WebGL.wasm.br",
+      streamingAssetsUrl: "StreamingAssets",
+      companyName: "test", productName: "test", productVersion: "test",
+      // Keep the last frame readable for screenshots.
+      webglContextAttributes: { preserveDrawingBuffer: true },
+      showBanner: (msg, type) => record("BANNER", [type, msg]),
+    };
+    const script = document.createElement("script");
+    script.src = "Build/WebGL.loader.js";
+    script.onload = () => {
+      let lastPct = -10;
+      createUnityInstance(canvas, config, (p) => {
+        const pct = Math.floor(p * 100);
+        if (pct >= lastPct + 10) { lastPct = pct; record("TEST", ["loading " + pct + "%"]); }
+      })
+        .then((instance) => { window.unityInstance = instance; record("TEST", ["instance ready; key listeners: " + (keyListeners.join(", ") || "none")]); canvas.focus(); runScript(); })
+        .catch((err) => record("TEST", ["createUnityInstance failed", err]));
+    };
+    script.onerror = () => record("TEST", ["loader script failed to load"]);
+    // ?restore=1: start from serve.py's test save (a save backup), staged into
+    // this browser's saves with the build's own saves.js before the game loads.
+    async function prepareSaves() {
+      if (params.get("restore") !== "1") return;
+      await new Promise((ok, fail) => {
+        const s = document.createElement("script");
+        s.src = "saves.js"; s.onload = ok; s.onerror = () => fail(new Error("saves.js missing from this build"));
+        document.head.appendChild(s);
+      });
+      const reply = await fetch("/__save.json", { cache: "no-store" });
+      if (!reply.ok) throw new Error("?restore=1 but the server has no test save (" + reply.status + ")");
+      const n = await OvercookedSaves.stageRestore(new File([await reply.blob()], "test-save.json"));
+      console.log("[page] test save staged: " + n + " file(s)");
+      const restored = await OvercookedSaves.applyPendingRestore();
+      if (restored) console.log("[page] saves restored from the backup made " + restored);
+    }
+    prepareSaves()
+      .catch((err) => record("TEST", ["test save failed", String(err)]))
+      .then(() => document.body.appendChild(script));
+  </script>
+</body>
+</html>

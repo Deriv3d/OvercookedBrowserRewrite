@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Phone page (port/mobile/README.md). Same game as the desktop page; this
+       one fills a phone screen, keeps Safari's zoom and scroll gestures off the
+       game, and renders at a capped pixel density. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.json">
+  <!-- Home Screen icon: icon.png (180x180) next to this page, placed in the
+       lab build folder by hand (game art never goes in the repo). Without it
+       iOS uses a screenshot. -->
+  <link rel="apple-touch-icon" href="icon.png">
+  <title>{{{ PRODUCT_NAME }}}</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; color: #eee; font: 15px/1.4 system-ui, sans-serif; overflow: hidden;
+      overscroll-behavior: none; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+      -webkit-tap-highlight-color: transparent; }
+    /* The play area stays inside the notch / Dynamic Island / home bar. */
+    #stage { position: fixed; top: env(safe-area-inset-top); right: env(safe-area-inset-right); bottom: env(safe-area-inset-bottom); left: env(safe-area-inset-left);
+      display: flex; align-items: center; justify-content: center; background: #000; }
+    /* The PC game runs at 16:9; a phone is wider, so it gets black bars at the sides like the desktop page. */
+    #unity-canvas { --w: calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right)); --h: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+      width: min(var(--w), calc(var(--h) * 16 / 9)); height: min(var(--h), calc(var(--w) * 9 / 16)); display: block; background: #000; outline: none; touch-action: none; }
+    /* Touch controls will live here, over the play area (port/mobile/README.md). */
+    #touch-layer { position: absolute; inset: 0; pointer-events: none; }
+    .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 16px; align-items: center; justify-content: center; background: rgba(0,0,0,.85);
+      text-align: center; padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); z-index: 5; }
+    .hidden { display: none !important; }
+    #bar { width: min(420px, 70vw); height: 10px; border-radius: 5px; background: #333; overflow: hidden; }
+    #bar > div { height: 100%; width: 0; background: #f2b134; transition: width .2s; }
+    button { font: inherit; font-size: 18px; padding: 14px 28px; border-radius: 10px; border: 0; background: #f2b134; color: #111; font-weight: 600; }
+    button.secondary { font-size: 15px; padding: 9px 16px; background: #333; color: #eee; }
+    #saves { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; align-items: center; }
+    #saves-note { flex-basis: 100%; }
+    #error { color: #ff8a80; max-width: 640px; white-space: pre-wrap; }
+    #rotate { z-index: 20; display: none; }
+    @media (orientation: portrait) { #rotate { display: flex; } }
+  </style>
+</head>
+<body>
+  <div id="stage"><canvas id="unity-canvas" tabindex="-1"></canvas><div id="touch-layer"></div></div>
+
+  <div id="loading" class="overlay">
+    <div>Loading Overcooked…</div>
+    <div id="bar"><div></div></div>
+    <div id="error" class="hidden"></div>
+  </div>
+
+  <div id="start" class="overlay hidden">
+    <button id="play">Tap to play</button>
+    <div style="opacity:.75">Play with a PS4 controller paired to this device.<br>For full screen: Share › Add to Home Screen, then open it from there.</div>
+    <div id="offline-note" class="hidden" style="opacity:.75"></div>
+    <div id="saves">
+      <button class="secondary" id="backup">Back up saves</button>
+      <button class="secondary" id="restore">Restore saves</button>
+      <input type="file" id="restore-file" accept=".json,application/json" class="hidden">
+      <div id="saves-note" style="opacity:.75"></div>
+    </div>
+  </div>
+
+  <div id="rotate" class="overlay">Turn your phone sideways to play.</div>
+
+  <script src="saves.js"></script>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const canvas = document.getElementById("unity-canvas");
+    const loading = document.getElementById("loading");
+    const start = document.getElementById("start");
+    const bar = document.querySelector("#bar > div");
+    const errorBox = document.getElementById("error");
+    const offlineNote = document.getElementById("offline-note");
+
+    // ?log=1: every console line goes to tools/serve.py's /__log (browser.log
+    // under the test folder), because Safari on an iPhone can't be inspected
+    // without a Mac. Lines are sent in batches, at most twice a second.
+    if (params.get("log") === "1") {
+      const run = "phone-" + new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14);
+      let queue = [];
+      let timer = 0;
+      const send = () => {
+        timer = 0;
+        if (!queue.length) return;
+        const body = queue.join("\n") + "\n";
+        queue = [];
+        fetch("/__log?run=" + run, { method: "POST", body, keepalive: true }).catch(() => {});
+      };
+      for (const level of ["log", "info", "warn", "error"]) {
+        const original = console[level].bind(console);
+        console[level] = (...args) => {
+          original(...args);
+          queue.push(level.toUpperCase() + " " + args.map(String).join(" "));
+          if (!timer) timer = setTimeout(send, 500);
+        };
+      }
+      console.log("[page] " + JSON.stringify({ ua: navigator.userAgent, screen: screen.width + "x" + screen.height + "@" + devicePixelRatio,
+        cores: navigator.hardwareConcurrency, touch: navigator.maxTouchPoints, standalone: !!navigator.standalone }));
+      addEventListener("pagehide", send);
+    }
+
+    function showError(message) {
+      // A tab that runs out of memory usually just reloads; when Unity gets to
+      // say so first, explain what happened.
+      if (/out of memory|Cannot enlarge memory|RangeError/i.test(message)) {
+        message = "The game ran out of memory on this device.\nClose other tabs and apps, then reload.\n\n" + message;
+      }
+      errorBox.textContent = message;
+      errorBox.classList.remove("hidden");
+      loading.classList.remove("hidden");
+    }
+    // Pads as Safari reports them (the game matches pads by this id string).
+    addEventListener("gamepadconnected", (e) => {
+      const g = e.gamepad;
+      console.log("[page] gamepad connected index=" + g.index + " id=" + JSON.stringify(g.id) + " mapping=" + JSON.stringify(g.mapping)
+        + " buttons=" + g.buttons.length + " axes=" + g.axes.length);
+    });
+    addEventListener("gamepaddisconnected", (e) => console.log("[page] gamepad disconnected index=" + e.gamepad.index));
+    addEventListener("error", (e) => console.error("[page] " + (e.message || e)));
+    addEventListener("unhandledrejection", (e) => console.error("[page] " + (e.reason && e.reason.message || e.reason)));
+
+    // Keep Safari's gestures (pinch zoom, double-tap zoom, pull to refresh,
+    // long-press menus) off the game.
+    for (const type of ["gesturestart", "gesturechange", "dblclick", "contextmenu"]) {
+      document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
+    }
+    document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+    document.getElementById("play").addEventListener("click", () => {
+      // The tap unlocks audio. "playback" makes it play like a game app even
+      // with the ring/silent switch on (Safari 17+).
+      try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (err) { console.warn("[page] audioSession", err); }
+      start.classList.add("hidden");
+      canvas.focus();
+    });
+
+    // Render size: ?dpr= sets the pixel density; phones default to at most
+    // 1.5 (fill-rate limit), other screens use their own.
+    const isPhone = params.get("phone") === "1" || (params.get("phone") !== "0" &&
+      (/iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1) ||
+       (/Android/.test(navigator.userAgent) && /Mobile/.test(navigator.userAgent))));
+    const dprParam = parseFloat(params.get("dpr"));
+    const dpr = dprParam > 0 ? dprParam : isPhone ? Math.min(window.devicePixelRatio || 1, 1.5) : (window.devicePixelRatio || 1);
+
+    const buildUrl = "Build";
+    const config = {
+      dataUrl: buildUrl + "/{{{ DATA_FILENAME }}}",
+      frameworkUrl: buildUrl + "/{{{ FRAMEWORK_FILENAME }}}",
+#if USE_WASM
+      codeUrl: buildUrl + "/{{{ CODE_FILENAME }}}",
+#endif
+#if MEMORY_FILENAME
+      memoryUrl: buildUrl + "/{{{ MEMORY_FILENAME }}}",
+#endif
+#if SYMBOLS_FILENAME
+      symbolsUrl: buildUrl + "/{{{ SYMBOLS_FILENAME }}}",
+#endif
+      streamingAssetsUrl: "StreamingAssets",
+      companyName: {{{ JSON.stringify(COMPANY_NAME) }}},
+      productName: {{{ JSON.stringify(PRODUCT_NAME) }}},
+      productVersion: {{{ JSON.stringify(PRODUCT_VERSION) }}},
+      devicePixelRatio: dpr,
+      matchWebGLToCanvasSize: true,
+      showBanner: (msg, type) => { if (type === "error") showError(msg); else console.log(msg); },
+    };
+    console.log("[page] phone=" + isPhone + " dpr=" + dpr + " (screen " + (window.devicePixelRatio || 1) + ")");
+
+    // Offline play: sw.js keeps a copy of this build, so after one full load
+    // from a secure (https or localhost) address the game opens from the Home
+    // Screen with no connection. Plain http skips it. ?offline=0 turns it off
+    // and removes the copy. Saves live in this site's storage too, so if iOS
+    // or the player clears the site's data, both the copy and the saves go.
+    async function setupOffline() {
+      if (!("serviceWorker" in navigator) || !window.isSecureContext) return "unavailable";
+      try {
+        if (params.get("offline") === "0") {
+          for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+          for (const name of await caches.keys()) if (name.startsWith("overcooked-phone")) await caches.delete(name);
+          // A worker still controlling this page would store the files again:
+          // reload once, uncontrolled.
+          if (navigator.serviceWorker.controller) { location.reload(); return new Promise(() => {}); }
+          return "off";
+        }
+        await navigator.serviceWorker.register("sw.js");
+        // First visit: wait for the worker to take over so the game files
+        // below go through it and get stored.
+        if (!navigator.serviceWorker.controller) {
+          await Promise.race([
+            new Promise((r) => navigator.serviceWorker.addEventListener("controllerchange", r, { once: true })),
+            new Promise((r) => setTimeout(r, 4000)),
+          ]);
+        }
+        // Ask Safari not to clear the site's data under storage pressure.
+        if (navigator.storage && navigator.storage.persist) {
+          navigator.storage.persist().then((ok) => console.log("[page] persistent storage " + ok)).catch(() => {});
+        }
+        return navigator.serviceWorker.controller ? "on" : "pending";
+      } catch (err) {
+        console.warn("[page] offline copy unavailable", err);
+        return "error";
+      }
+    }
+
+    // After a build has loaded: make sure the page is in the offline copy, and
+    // remove the previous build's files (hashed names never match the new ones).
+    async function dropOldBuilds(loaderUrl) {
+      try {
+        const keep = new Set([loaderUrl, config.dataUrl, config.frameworkUrl, config.codeUrl, config.memoryUrl, config.symbolsUrl]
+          .filter(Boolean).map((u) => new URL(u, location.href).href));
+        const cache = await caches.open("overcooked-phone");
+        // On the first visit the page itself loaded before the worker was
+        // running, so store it now; later visits refresh it on every load.
+        await cache.add(location.href.split("#")[0]);
+        // The page's own scripts: on the first visit they loaded before the
+        // worker took over, so they were never stored, and offline the page
+        // stopped at the missing saves.js.
+        const pageFiles = ["saves.js", "manifest.json"].map((f) => new URL(f, location.href).href);
+        await cache.addAll(pageFiles);
+        for (const f of pageFiles) keep.add(f);
+        let dropped = 0;
+        for (const request of await cache.keys()) {
+          if (new URL(request.url).pathname.includes("/Build/") && !keep.has(request.url)) {
+            await cache.delete(request);
+            dropped++;
+          }
+        }
+        if (dropped) console.log("[page] offline copy: removed " + dropped + " file(s) of an older build");
+        // Say "ready offline" only when every file of this build is stored.
+        const missing = [];
+        for (const url of keep) if (!(await cache.match(url))) missing.push(url.split("/").pop());
+        const page = await cache.match(location.href.split("#")[0], { ignoreSearch: true });
+        if (!page) missing.push("page");
+        offlineNote.textContent = missing.length
+          ? "Not ready for offline yet: open it once more while the PC is serving it."
+          : "Ready to play with no connection.";
+        offlineNote.classList.remove("hidden");
+        console.log("[page] offline copy: " + (missing.length ? "missing " + missing.join(", ") : "complete"));
+      } catch (err) {
+        console.warn("[page] offline copy cleanup failed", err);
+      }
+    }
+
+    // Saves: the game's saves share site storage with the offline copy, so a
+    // cleared site loses both. Back up / Restore keep a copy outside Safari.
+    const savesNote = document.getElementById("saves-note");
+    function showLastBackup() {
+      const t = OvercookedSaves.lastBackup();
+      if (!t) { savesNote.textContent = "No backup made on this device yet."; return; }
+      const days = Math.floor((Date.now() - t) / 86400000);
+      savesNote.textContent = "Last backup: " + (days < 1 ? "today" : days === 1 ? "yesterday" : days + " days ago") + ".";
+    }
+    document.getElementById("backup").addEventListener("click", async () => {
+      try {
+        const n = await OvercookedSaves.backup();
+        showLastBackup();
+        console.log("[page] saves backed up: " + n + " file(s)");
+      } catch (err) {
+        if (err && err.name === "AbortError") return;   // Share sheet closed
+        savesNote.textContent = err.message || String(err);
+      }
+    });
+    const restoreFile = document.getElementById("restore-file");
+    document.getElementById("restore").addEventListener("click", () => restoreFile.click());
+    restoreFile.addEventListener("change", async () => {
+      const file = restoreFile.files[0];
+      restoreFile.value = "";
+      if (!file) return;
+      try {
+        const n = await OvercookedSaves.stageRestore(file);
+        if (!confirm("Replace the saves on this device with the " + n + " file(s) in " + file.name + "? The game restarts.")) {
+          localStorage.removeItem("overcooked-pending-restore");
+          return;
+        }
+        location.reload();
+      } catch (err) {
+        savesNote.textContent = err.message || String(err);
+      }
+    });
+
+    // ?restore=1 (skip the intro on the phone): loads the PC's test
+    // save (tools/serve.py /__save.json, progress only, no PlayerPrefs) over
+    // the phone's saves once, then drops the flag from the address so a reload
+    // or a Home Screen icon doesn't restore again.
+    async function stageServerSave() {
+      const params = new URLSearchParams(location.search);
+      if (params.get("restore") !== "1") return;
+      params.delete("restore");
+      history.replaceState(null, "", location.pathname + (params.toString() ? "?" + params : "") + location.hash);
+      const reply = await fetch("/__save.json?phone=1", { cache: "no-store" });
+      if (!reply.ok) throw new Error("?restore=1 but the PC has no test save (" + reply.status + ")");
+      const n = await OvercookedSaves.stageRestore(new File([await reply.blob()], "test-save.json"));
+      console.log("[page] PC test save staged: " + n + " file(s)");
+    }
+
+    stageServerSave()
+      .then(() => OvercookedSaves.applyPendingRestore())
+      .then((restored) => {
+        if (!restored) return;
+        console.log("[page] saves restored from the backup made " + restored);
+        savesNote.textContent = "Saves restored from the backup made " + new Date(restored).toLocaleString() + ".";
+      },
+            (err) => { console.error("[page] restoring saves failed", err); savesNote.textContent = "Restoring saves failed: " + (err.message || err); })
+      .then(() => { if (!savesNote.textContent) showLastBackup(); return setupOffline(); })
+      .then((offline) => {
+      console.log("[page] offline=" + offline);
+      const script = document.createElement("script");
+      script.src = buildUrl + "/{{{ LOADER_FILENAME }}}";
+      script.onload = () => {
+        createUnityInstance(canvas, config, (p) => { bar.style.width = (100 * p) + "%"; })
+          .then((instance) => {
+            window.unityInstance = instance;
+            loading.classList.add("hidden");
+            if (offline === "on" || (offline === "pending" && navigator.serviceWorker.controller)) {
+              dropOldBuilds(script.src);
+            }
+            start.classList.remove("hidden");
+          })
+          .catch((err) => showError(String(err)));
+      };
+      script.onerror = () => showError(navigator.onLine
+        ? "Couldn't load the game files. Is tools/serve.py running from the phone build folder?"
+        : "No connection, and this device has no saved copy of the game (it may have been cleared).\nOpen the game once from its link while online to download it again.");
+      document.body.appendChild(script);
+    });
+  </script>
+</body>
+</html>

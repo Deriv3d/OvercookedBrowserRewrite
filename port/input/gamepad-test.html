@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<!--
+  Pad check for the Overcooked WebGL port.
+  Open this file in Chrome (double-click it), press any button on each pad.
+  It shows what the browser reports, which is exactly what the game sees:
+  the pad's name, whether Chrome applied the standard layout, and live
+  buttons and sticks. No game files involved.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pad check</title>
+  <style>
+    :root { --bg: #111; --fg: #eee; --dim: #888; --on: #f2b134; --ok: #7bd88f; --bad: #ff8a80; --panel: #1c1c1c; }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, sans-serif; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    p { color: var(--dim); margin: 0 0 16px; }
+    .pad { background: var(--panel); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+    .id { font: 13px ui-monospace, monospace; word-break: break-all; }
+    .verdict { margin: 6px 0 10px; font-weight: 600; }
+    .ok { color: var(--ok); } .bad { color: var(--bad); }
+    .buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+    .b { min-width: 64px; padding: 4px 6px; border-radius: 6px; background: #2a2a2a; color: var(--dim); font-size: 12px; text-align: center; }
+    .b.on { background: var(--on); color: #111; }
+    .axes { display: flex; gap: 18px; margin-top: 10px; flex-wrap: wrap; }
+    .stick { width: 90px; height: 90px; border-radius: 50%; background: #2a2a2a; position: relative; }
+    .stick i { position: absolute; width: 14px; height: 14px; margin: -7px; border-radius: 50%; background: var(--on); left: 50%; top: 50%; }
+    .nums { font: 12px ui-monospace, monospace; color: var(--dim); }
+  </style>
+</head>
+<body>
+  <h1>Pad check</h1>
+  <p>Press any button on each controller. Chrome only shows a pad after a button press on this page.</p>
+  <div id="pads"><div class="pad">No pads yet.</div></div>
+  <script>
+    // W3C standard layout names, DS4 wording.
+    const NAMES = ["Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2", "Share", "Options",
+      "L3", "R3", "Up", "Down", "Left", "Right", "PS", "Touchpad"];
+    const DS4 = { "05c4": "DualShock 4 v1", "09cc": "DualShock 4 v2", "0ba0": "Sony wireless adapter" };
+
+    // Mirrors port/input/WebGLStandardGamepadProfiles.cs. Unity hands the game
+    // only the first 63 characters of the name, so match on that, as the game does.
+    function verdict(pad) {
+      const m = /Vendor: ([0-9a-f]{4}) Product: ([0-9a-f]{4})/i.exec(pad.id) || /^([0-9a-f]{1,4})-([0-9a-f]{1,4})-/i.exec(pad.id);
+      const model = m && m[1].padStart(4, "0").toLowerCase() === "054c" ? DS4[m[2].padStart(4, "0").toLowerCase()] : null;
+      const seen = pad.id.slice(0, 63);
+      if (pad.mapping !== "standard")
+        return `<span class="bad">No standard layout: the game won't map this pad's buttons.</span>`;
+      const label = model ? model + ", standard layout" : "Standard layout";
+      if (/STANDARD GAMEPAD Vendor: 054c|^0*54c-|DUALSHOCK|^Wireless Controller/i.test(seen))
+        return `<span class="ok">${label}: the game's PS4 profile picks this up.</span>`;
+      if (/STANDARD GAMEPAD|Gamepad|Controller/i.test(seen))
+        return `<span class="ok">${label}: the game's generic pad profile picks this up.</span>`;
+      return `<span class="bad">${label}, but the name is too long for the game to recognise it.</span>`;
+    }
+
+    function render() {
+      const pads = [...navigator.getGamepads()].filter(Boolean);
+      const root = document.getElementById("pads");
+      if (!pads.length) { root.innerHTML = '<div class="pad">No pads yet.</div>'; requestAnimationFrame(render); return; }
+      root.innerHTML = pads.map((pad) => {
+        const buttons = pad.buttons.map((b, i) =>
+          `<div class="b${b.pressed ? " on" : ""}">${(pad.mapping === "standard" && NAMES[i]) || "Button " + i}<br>${i}${b.value > 0 && b.value < 1 ? " " + b.value.toFixed(2) : ""}</div>`).join("");
+        const sticks = [];
+        for (let a = 0; a + 1 < pad.axes.length; a += 2) {
+          const x = pad.axes[a], y = pad.axes[a + 1];
+          sticks.push(`<div><div class="stick"><i style="left:${50 + 45 * x}%;top:${50 + 45 * y}%"></i></div>
+            <div class="nums">axis ${a}: ${x.toFixed(2)}<br>axis ${a + 1}: ${y.toFixed(2)}</div></div>`);
+        }
+        return `<div class="pad"><div>Pad ${pad.index + 1}</div><div class="id">${pad.id}</div>
+          <div class="verdict">${verdict(pad)}</div><div class="buttons">${buttons}</div><div class="axes">${sticks.join("")}</div></div>`;
+      }).join("");
+      requestAnimationFrame(render);
+    }
+    requestAnimationFrame(render);
+  </script>
+</body>
+</html>

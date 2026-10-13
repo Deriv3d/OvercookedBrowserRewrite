@@ -1,0 +1,10 @@
+<!--
+  Keep code the WebGL linker would otherwise strip.
+  - The game's assemblies: InControl and the options/debug code use reflection.
+  - System.Xml: saves are read and written with XmlSerializer (PCSaveManager).
+-->
+<linker>
+  <assembly fullname="Assembly-CSharp" preserve="all" />
+  <assembly fullname="Assembly-CSharp-firstpass" preserve="all" />
+  <assembly fullname="System.Xml" preserve="all" />
+</linker>

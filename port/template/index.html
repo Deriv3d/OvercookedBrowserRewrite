@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{{ PRODUCT_NAME }}}</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; color: #eee; font: 15px/1.4 system-ui, sans-serif; overflow: hidden; }
+    #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #000; }
+    /* The PC game runs at 16:9; keep that shape in any window, with black bars. */
+    #unity-canvas { width: min(100vw, calc(100vh * 16 / 9)); height: min(100vh, calc(100vw * 9 / 16)); display: block; background: #000; outline: none; }
+    #saves { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+    #saves-note { flex-basis: 100%; font-size: 12px; color: rgba(255,255,255,.55); }
+    button.small { padding: 5px 12px; font-size: 12px; }
+    #build-label { font-size: 12px; color: rgba(255,255,255,.55); margin-top: -10px; }
+    .overlay { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 18px; align-items: center; justify-content: center; background: rgba(0,0,0,.82); text-align: center; padding: 16px; }
+    .hidden { display: none !important; }
+    #bar { width: min(420px, 80vw); height: 10px; border-radius: 5px; background: #333; overflow: hidden; }
+    #bar > div { height: 100%; width: 0; background: #f2b134; transition: width .2s; }
+    button { font: inherit; padding: 10px 22px; border-radius: 8px; border: 0; background: #f2b134; color: #111; cursor: pointer; font-weight: 600; }
+    button.secondary { background: #333; color: #eee; }
+    table { border-collapse: collapse; margin: 0 auto; }
+    td, th { padding: 3px 10px; text-align: left; }
+    th { color: #f2b134; font-weight: 600; }
+    kbd { background: #2a2a2a; border: 1px solid #555; border-radius: 4px; padding: 1px 6px; font: 13px ui-monospace, monospace; }
+    #toolbar { position: fixed; right: 10px; bottom: 10px; display: flex; gap: 8px; opacity: 0; transition: opacity .3s; }
+    #toolbar.awake, #toolbar:hover { opacity: 1; }
+    #toolbar button { padding: 6px 12px; font-size: 13px; }
+    #error { color: #ff8a80; max-width: 640px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="stage"><canvas id="unity-canvas" tabindex="-1"></canvas></div>
+
+  <div id="loading" class="overlay">
+    <div>Loading Overcooked…</div>
+    <div id="bar"><div></div></div>
+    <div id="error" class="hidden"></div>
+  </div>
+
+  <div id="start" class="overlay hidden">
+    <button id="play">Click to play</button>
+    <div id="build-label"><!--port-build--> {{{ PRODUCT_VERSION }}}</div>
+    <div id="saves">
+      <button class="secondary small" id="backup">Back up saves</button>
+      <button class="secondary small" id="restore">Restore saves</button>
+      <input type="file" id="restore-file" accept=".json,application/json" hidden>
+      <div id="saves-note"></div>
+    </div>
+    <table>
+      <tr><th></th><th>One player</th><th>Two on one keyboard</th></tr>
+      <tr><td>Move</td><td><kbd>W A S D</kbd> or arrows</td><td><kbd>W A S D</kbd> / arrows</td></tr>
+      <tr><td>Pick up / put down</td><td><kbd>Space</kbd></td><td><kbd>Space</kbd> / <kbd>/</kbd></td></tr>
+      <tr><td>Chop / throw</td><td><kbd>E</kbd> or <kbd>Ctrl</kbd></td><td><kbd>E</kbd> or <kbd>L Ctrl</kbd> / <kbd>R Ctrl</kbd></td></tr>
+      <tr><td>Dash</td><td><kbd>Q</kbd> or <kbd>Alt</kbd></td><td><kbd>Q</kbd> or <kbd>L Alt</kbd> / <kbd>R Alt</kbd></td></tr>
+      <tr><td>Emote</td><td><kbd>T</kbd></td><td><kbd>T</kbd> / <kbd>.</kbd></td></tr>
+      <tr><td>Switch chef</td><td><kbd>Shift</kbd></td><td><kbd>L Shift</kbd> / <kbd>R Shift</kbd></td></tr>
+      <tr><td>Pause / menu</td><td><kbd>Esc</kbd>, <kbd>Enter</kbd></td><td></td></tr>
+    </table>
+    <div style="opacity:.7">Fullscreen (<kbd>F11</kbd> or the button) is safest: it stops Chrome from grabbing keys like Ctrl+W.</div>
+  </div>
+
+  <div id="toolbar" class="hidden">
+    <button class="secondary" id="fullscreen">Fullscreen</button>
+  </div>
+
+  <script src="saves.js"></script>
+  <script src="pad-log.js"></script>
+  <script>
+    const canvas = document.getElementById("unity-canvas");
+    const loading = document.getElementById("loading");
+    const start = document.getElementById("start");
+    const toolbar = document.getElementById("toolbar");
+    const bar = document.querySelector("#bar > div");
+    const errorBox = document.getElementById("error");
+
+    function showError(message) {
+      errorBox.textContent = message;
+      errorBox.classList.remove("hidden");
+      loading.classList.remove("hidden");
+    }
+
+    // Keys the game uses that the browser would otherwise act on
+    // (Tab moves focus, Alt opens the menu, Space/arrows scroll, Ctrl+S/D/F…).
+    const gameKeys = new Set(["Tab", "AltLeft", "AltRight", "ControlLeft", "ControlRight", "Space",
+      "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Slash", "Period", "Quote"]);
+    function blockBrowserKeys(e) {
+      if (gameKeys.has(e.code) || e.ctrlKey || e.altKey) e.preventDefault();
+    }
+    window.addEventListener("keydown", blockBrowserKeys, { capture: true });
+    window.addEventListener("keyup", blockBrowserKeys, { capture: true });
+
+    // Ctrl+W can't be blocked in a normal window; at least ask before leaving.
+    window.addEventListener("beforeunload", (e) => { if (started) { e.preventDefault(); e.returnValue = ""; } });
+
+    async function goFullscreen() {
+      try {
+        await document.documentElement.requestFullscreen();
+        // Chrome only: in fullscreen this lets the game have Ctrl+W, Esc, etc.
+        // Hold Esc to leave fullscreen.
+        if (navigator.keyboard && navigator.keyboard.lock) await navigator.keyboard.lock();
+      } catch (err) {
+        console.warn("Fullscreen/keyboard lock not available", err);
+      }
+      canvas.focus();
+    }
+    document.getElementById("fullscreen").addEventListener("click", goFullscreen);
+
+    let started = false;
+    document.getElementById("play").addEventListener("click", () => {
+      // The click also unlocks audio: browsers keep sound off until the page is used.
+      started = true;
+      start.classList.add("hidden");
+      toolbar.classList.remove("hidden");
+      canvas.focus();
+    });
+    canvas.addEventListener("mousedown", () => canvas.focus());
+
+    // The toolbar stays out of the picture: it shows while the mouse moves
+    // and fades out two seconds after it stops.
+    let toolbarTimer = 0;
+    window.addEventListener("mousemove", () => {
+      toolbar.classList.add("awake");
+      clearTimeout(toolbarTimer);
+      toolbarTimer = setTimeout(() => toolbar.classList.remove("awake"), 2000);
+    });
+
+    // Saves: the same backup/restore as the phone page
+    // (saves.js, port/mobile/template). A backup lets the PC's test runs start
+    // from a saved game: with ?restore=1 the page loads tools/serve.py's
+    // /__save.json into this browser's saves before the game starts.
+    const savesNote = document.getElementById("saves-note");
+    // On a PC the backup should simply download; saves.js prefers the share
+    // sheet whenever the browser offers one (Chrome on Windows does).
+    try { Object.defineProperty(navigator, "canShare", { value: undefined, configurable: true }); } catch (err) { /* keep the share sheet */ }
+    document.getElementById("backup").addEventListener("click", async () => {
+      try {
+        const n = await OvercookedSaves.backup();
+        savesNote.textContent = "Backed up " + n + " file(s).";
+        console.log("[page] saves backed up: " + n + " file(s)");
+      } catch (err) { savesNote.textContent = err.message || String(err); }
+    });
+    const restoreFile = document.getElementById("restore-file");
+    document.getElementById("restore").addEventListener("click", () => restoreFile.click());
+    restoreFile.addEventListener("change", async () => {
+      const file = restoreFile.files[0];
+      if (!file) return;
+      try {
+        const n = await OvercookedSaves.stageRestore(file);
+        if (!confirm("Replace the saves in this browser with the " + n + " file(s) in " + file.name + "? The game restarts.")) {
+          localStorage.removeItem("overcooked-pending-restore");
+          return;
+        }
+        started = false;
+        location.reload();
+      } catch (err) { savesNote.textContent = err.message || String(err); }
+    });
+    async function prepareSaves() {
+      if (new URLSearchParams(location.search).get("restore") === "1") {
+        const reply = await fetch("/__save.json", { cache: "no-store" });
+        if (!reply.ok) throw new Error("?restore=1 but the server has no test save (" + reply.status + ")");
+        const n = await OvercookedSaves.stageRestore(new File([await reply.blob()], "test-save.json"));
+        console.log("[page] test save staged: " + n + " file(s)");
+      }
+      const restored = await OvercookedSaves.applyPendingRestore();
+      if (restored) {
+        console.log("[page] saves restored from the backup made " + restored);
+        savesNote.textContent = "Saves restored from the backup made " + new Date(restored).toLocaleString() + ".";
+      }
+    }
+
+    const buildUrl = "Build";
+    const config = {
+      dataUrl: buildUrl + "/{{{ DATA_FILENAME }}}",
+      frameworkUrl: buildUrl + "/{{{ FRAMEWORK_FILENAME }}}",
+#if USE_WASM
+      codeUrl: buildUrl + "/{{{ CODE_FILENAME }}}",
+#endif
+#if MEMORY_FILENAME
+      memoryUrl: buildUrl + "/{{{ MEMORY_FILENAME }}}",
+#endif
+#if SYMBOLS_FILENAME
+      symbolsUrl: buildUrl + "/{{{ SYMBOLS_FILENAME }}}",
+#endif
+      streamingAssetsUrl: "StreamingAssets",
+      companyName: {{{ JSON.stringify(COMPANY_NAME) }}},
+      productName: {{{ JSON.stringify(PRODUCT_NAME) }}},
+      productVersion: {{{ JSON.stringify(PRODUCT_VERSION) }}},
+      showBanner: (msg, type) => { if (type === "error") showError(msg); else console.log(msg); },
+    };
+
+    const script = document.createElement("script");
+    script.src = buildUrl + "/{{{ LOADER_FILENAME }}}";
+    script.onload = () => {
+      createUnityInstance(canvas, config, (p) => { bar.style.width = (100 * p) + "%"; })
+        .then((instance) => {
+          window.unityInstance = instance;
+          loading.classList.add("hidden");
+          start.classList.remove("hidden");
+        })
+        .catch((err) => showError(String(err)));
+    };
+    script.onerror = () => showError("Couldn't load the game files. Is tools/serve.py running from the build folder?");
+    // Saves are put back before the game starts, so it never writes over them.
+    prepareSaves()
+      .catch((err) => { console.error("[page] saves restore failed", err); savesNote.textContent = "Restoring saves failed: " + (err.message || err); })
+      .then(() => document.body.appendChild(script));
+  </script>
+</body>
+</html>

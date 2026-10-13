@@ -1,0 +1,37 @@
+# Builds the iPhone app shell (port/mobile/ios): our own Swift code only, no
+# game files. The PC adds the game with port/mobile/tools/pack_ipa.py.
+name: iPhone app shell
+
+on:
+  push:
+    paths:
+      - "port/mobile/ios/**"
+      - "!port/mobile/ios/dist/**"
+      - ".github/workflows/ios-shell.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the unsigned shell
+        run: port/mobile/ios/build_shell.sh "$RUNNER_TEMP/ios" "${{ github.run_number }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Overcooked-shell
+          path: ${{ runner.temp }}/ios/Overcooked-shell.ipa
+          retention-days: 30
+      # The same file as text, so the shell can be copied from the log when
+      # artifact downloads aren't available; put it in port/mobile/ios/dist/
+      # and check it against the hash.
+      - name: Print the shell
+        run: |
+          shasum -a 256 "$RUNNER_TEMP/ios/Overcooked-shell.ipa"
+          echo "----- BEGIN SHELL -----"
+          base64 -b 76 -i "$RUNNER_TEMP/ios/Overcooked-shell.ipa"
+          echo "----- END SHELL -----"
