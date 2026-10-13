@@ -74,14 +74,22 @@ Phones start on the Super Low graphics preset; you can change it in Options.
 
 **Updating the phone:** serve the new phone build on 8443 as in step 2, then on home Wi-Fi open the icon, close it, reopen it and wait for the same message. Don't delete the icon, because that deletes its saves.
 
-## 6. Updating after a change to this repo
+## 6. Updating to a new version
 
-```
-git pull
-py tools\rebuild_all.py --from patch --number 2 --no-serve
-```
+When this repo has new commits, follow these steps. They apply whether you maintain the repo or just play.
 
-If you deleted `<lab>\export` and `<lab>\project` to save space, leave out `--from patch` so it starts from the export (slower). Then copy the build to `served\` and serve it as above.
+1. **Get the changes:** `git pull`
+2. **Check the game:** `py tools\check_game.py`. Steam updates can change the install.
+3. **Build the PC version:** `py tools\rebuild_all.py --number <N> --no-serve`. Use a new number each time, for example the last one plus 1. If you still have `<lab>\export` and `<lab>\project`, add `--from patch` to skip the export (faster).
+4. **Build the phone version** (if you play on a phone): `py tools\rebuild_all.py --from build --phone --number <N> --no-serve`
+5. **Copy the results** next to the old ones:
+   - `<lab>\project\Builds\WebGL<N>` to `<lab>\served\build<N>`
+   - `<lab>\project\Builds\WebGL-Phone<N>` to `<lab>\served\phone<N>`
+6. **Try the new PC build on another port first:** `py tools\serve.py <lab>\served\build<N> 8001`, then open http://localhost:8001/. If it plays, stop the old server on 8000 (Ctrl+C in its window) and start `py tools\serve.py <lab>\served\build<N> 8000`.
+7. **Phone:** stop the old phone servers and start the new build on 8002 (`--lan`) and 8443 (`--lan --https`), as in section 5. On the iPhone, on home Wi-Fi, open the Home Screen icon, close it, reopen it and wait for "Ready to play with no connection." Saves stay; don't delete the icon.
+8. **Tidy up:** once the new version works, delete the older `served\build*` and `served\phone*` folders. Keep `<lab>\https`.
+
+Saves live in the browser and the phone app, so they carry over to every new build.
 
 ## Maintaining this repo
 
