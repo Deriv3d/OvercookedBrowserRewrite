@@ -29,7 +29,9 @@ EDITS = [
         const pageFiles = ["saves.js", "manifest.json"].map((f) => new URL(f, location.href).href);
         await cache.addAll(pageFiles);
         for (const f of pageFiles) keep.add(f);
-        let dropped = 0;'''),
+        let dropped = 0;''',
+     # Already applied when the page stores its scripts (a later edit changes the line above it).
+     'const pageFiles = ["saves.js", "manifest.json"]'),
     ('''        if (dropped) console.log("[page] offline copy: removed " + dropped + " file(s) of an older build");
       } catch (err) {''',
      '''        if (dropped) console.log("[page] offline copy: removed " + dropped + " file(s) of an older build");
@@ -43,12 +45,30 @@ EDITS = [
           : "Ready to play with no connection.";
         offlineNote.classList.remove("hidden");
         console.log("[page] offline copy: " + (missing.length ? "missing " + missing.join(", ") : "complete"));
-      } catch (err) {'''),
+      } catch (err) {''',
+     'Say "ready offline" only when every file of this build is stored.'),
     ('''            if (offline === "on") {
               offlineNote.classList.remove("hidden");
               dropOldBuilds(script.src);''',
      '''            if (offline === "on" || (offline === "pending" && navigator.serviceWorker.controller)) {
               dropOldBuilds(script.src);'''),
+    # One stored copy of the page (2026-10-13: offline, an older copy stored
+    # under other ?parameters opened and asked for a removed build's files).
+    ('''        await cache.add(location.href.split("#")[0]);
+        // The page's own scripts:''',
+     r'''        // One copy, under the address without ?parameters (sw.js pageKey):
+        // older copies stored under other parameters still pointed at a
+        // previous build's files, and offline one of them could be opened.
+        const pageUrl = location.origin + location.pathname.replace(/index\.html$/, "");
+        const fresh = await fetch(location.href.split("#")[0], { cache: "no-store" });
+        if (fresh.ok) await cache.put(pageUrl, fresh);
+        for (const request of await cache.keys()) {
+          const u = new URL(request.url);
+          if (request.url !== pageUrl && u.origin + u.pathname.replace(/index\.html$/, "") === pageUrl) await cache.delete(request);
+        }
+        // The page's own scripts:'''),
+    ('''        const page = await cache.match(location.href.split("#")[0], { ignoreSearch: true });''',
+     '''        const page = await cache.match(pageUrl);'''),
 ]
 
 
@@ -60,8 +80,8 @@ def main():
     if not page.exists():
         sys.exit(f"No index.html in {build}")
     text = page.read_text(encoding="utf-8")
-    for old, new in EDITS:
-        if new in text:
+    for old, new, *done in EDITS:
+        if new in text or (done and done[0] in text):
             continue
         if text.count(old) != 1:
             sys.exit(f"{page}: anchor not found once, nothing changed:\n{old.splitlines()[0]}")

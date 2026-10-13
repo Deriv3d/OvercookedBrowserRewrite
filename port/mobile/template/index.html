@@ -212,7 +212,16 @@
         const cache = await caches.open("overcooked-phone");
         // On the first visit the page itself loaded before the worker was
         // running, so store it now; later visits refresh it on every load.
-        await cache.add(location.href.split("#")[0]);
+        // One copy, under the address without ?parameters (sw.js pageKey):
+        // older copies stored under other parameters still pointed at a
+        // previous build's files, and offline one of them could be opened.
+        const pageUrl = location.origin + location.pathname.replace(/index\.html$/, "");
+        const fresh = await fetch(location.href.split("#")[0], { cache: "no-store" });
+        if (fresh.ok) await cache.put(pageUrl, fresh);
+        for (const request of await cache.keys()) {
+          const u = new URL(request.url);
+          if (request.url !== pageUrl && u.origin + u.pathname.replace(/index\.html$/, "") === pageUrl) await cache.delete(request);
+        }
         // The page's own scripts: on the first visit they loaded before the
         // worker took over, so they were never stored, and offline the page
         // stopped at the missing saves.js.
@@ -230,7 +239,7 @@
         // Say "ready offline" only when every file of this build is stored.
         const missing = [];
         for (const url of keep) if (!(await cache.match(url))) missing.push(url.split("/").pop());
-        const page = await cache.match(location.href.split("#")[0], { ignoreSearch: true });
+        const page = await cache.match(pageUrl);
         if (!page) missing.push("page");
         offlineNote.textContent = missing.length
           ? "Not ready for offline yet: open it once more while the PC is serving it."

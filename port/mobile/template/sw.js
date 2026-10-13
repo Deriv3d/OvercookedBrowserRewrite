@@ -19,6 +19,11 @@
 const CACHE = "overcooked-phone";
 const NAVIGATE_TIMEOUT_MS = 4000;
 
+// The page's address without ?parameters or a trailing index.html.
+function pageKey(url) {
+  return url.origin + url.pathname.replace(/index\.html$/, "");
+}
+
 self.addEventListener("install", () => self.skipWaiting());
 
 self.addEventListener("activate", (event) => {
@@ -34,13 +39,19 @@ self.addEventListener("fetch", (event) => {
 
   if (request.mode === "navigate") {
     event.respondWith((async () => {
-      const cached = await caches.match(request, { ignoreSearch: true });
+      // One stored copy of the page, under its address without ?parameters.
+      // Copies stored under different parameters (?restore=1, ?log=1) were
+      // separate entries, and offline the first match could be an older
+      // build's page whose files had been removed: "Unable to load file
+      // Build/<hash>.framework.js.gz".
+      const key = pageKey(url);
+      const cached = (await caches.match(key)) || (await caches.match(request, { ignoreSearch: true }));
       try {
         const network = fetch(request);
         const response = cached
           ? await Promise.race([network, new Promise((_, no) => setTimeout(() => no(new Error("timeout")), NAVIGATE_TIMEOUT_MS))])
           : await network;
-        if (response.ok) event.waitUntil(caches.open(CACHE).then((c) => c.put(request, response.clone())));
+        if (response.ok) event.waitUntil(caches.open(CACHE).then((c) => c.put(key, response.clone())));
         return response;
       } catch (err) {
         if (cached) return cached;
@@ -49,6 +60,10 @@ self.addEventListener("fetch", (event) => {
     })());
     return;
   }
+
+  // The page fetched by the page itself (index.html stores its own copy):
+  // straight to the network, never an older stored copy.
+  if (url.pathname.endsWith("/") || url.pathname.endsWith("index.html")) return;
 
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);
