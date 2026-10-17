@@ -1,5 +1,7 @@
 # OvercookedWebGL
 
+This is ALL Claude. Feel free to not use it.
+
 Play **your own copy** of Overcooked (2016, Ghost Town Games / Team17, Steam, Unity 5.5) in a web browser: in Chrome on your PC, and on an iPhone as a Home Screen app that also works offline.
 
 This repo contains **no part of the game**. It holds only the recipe: a patch script, small replacement scripts, shaders, a web page and tools. You run them against the game files from your own Steam install, and everything is built on your own PC. Nothing from the game is (or may be) committed here: no art, sound, levels, decompiled code or builds. Don't share the builds you make either; they contain the game.
